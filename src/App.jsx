@@ -1,7 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 import React from "react";
 import Home from "./components/Home";
-import Ats from "./Ats";
+import Ats from "./components/Ats";
 
 const App = () => {
   return (
