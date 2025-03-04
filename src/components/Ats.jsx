@@ -6,6 +6,7 @@ const Ats = () => {
   const [jobDescription, setJobDescription] = useState("");
   const [atsScore, setAtsScore] = useState(null);
   const [missingKeywords, setMissingKeywords] = useState(null);
+  const [improvement_tips, setImprovement_tips] = useState(null);
   const [error, setError] = useState("");
 
   const handleResumeChange = (e) => {
@@ -38,9 +39,11 @@ const Ats = () => {
           },
         }
       );
-
+      console.log(response);
+      
       setAtsScore(response.data.match_score);
       setMissingKeywords(response.data.missing_keywords);
+      setImprovement_tips(response.data.improvement_tips);
       setError("");
     } catch (err) {
       setError("Error processing resume. Please try again.");
@@ -104,6 +107,10 @@ const Ats = () => {
           <h4 className="text-lg text-gray-600 mt-2">
             Missing Keywords:{" "}
             <span className="text-indigo-500">{missingKeywords}</span>
+          </h4>
+          <h4 className="text-lg text-gray-600 mt-2">
+            Improvement Tips:{" "}
+            <span className="text-indigo-500">{improvement_tips}</span>
           </h4>
         </div>
       )}
