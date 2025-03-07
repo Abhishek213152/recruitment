@@ -1,14 +1,14 @@
 import { Routes, Route } from "react-router-dom";
 import React from "react";
 import Home from "./components/Home";
-import Ats from "./components/Ats";
+import Sidebar from "./components/Sidebar";
 
 const App = () => {
   return (
     <div>
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/ats" element={<Ats />} />
+        <Route path="/a" element={<Sidebar />} />
       </Routes>
     </div>
   );
