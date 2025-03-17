@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import Editor from "@monaco-editor/react";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import { dracula } from "react-syntax-highlighter/dist/esm/styles/prism";
 import java from "react-syntax-highlighter/dist/esm/languages/prism/java";
@@ -12,7 +13,6 @@ SyntaxHighlighter.registerLanguage("python", python);
 
 const Coding = () => {
   const [isAccepted, setIsAccepted] = useState(false);
-
   const [code, setCode] = useState({
     java: "",
     cpp: "",
@@ -37,7 +37,14 @@ const Coding = () => {
   const [results, setResults] = useState(null);
   const [testResults, setTestResults] = useState([]);
   const [runningTest, setRunningTest] = useState(null);
-  const textareaRef = useRef(null);
+  const editorRef = useRef(null);
+
+  // Map language names to Monaco editor language identifiers
+  const languageMap = {
+    java: "java",
+    cpp: "cpp",
+    python: "python",
+  };
 
   useEffect(() => {
     fetchQuestion();
@@ -72,76 +79,44 @@ const Coding = () => {
       });
   };
 
-  const handleChange = (e) => {
-    setCode({ ...code, [language]: e.target.value });
-    // Clear test results when code changes
-    setTestResults([]);
+  // Function to handle editor mounting
+  const handleEditorDidMount = (editor, monaco) => {
+    editorRef.current = editor;
+
+    // Set editor options
+    editor.updateOptions({
+      scrollBeyondLastLine: false,
+      minimap: { enabled: true },
+      fontFamily: "'Fira Code', 'Consolas', monospace",
+      fontSize: 14,
+      lineNumbers: "on",
+      matchBrackets: "always",
+      automaticLayout: true,
+      tabSize: 4,
+    });
+
+    // Add auto bracket closing
+    monaco.editor.defineTheme("customDracula", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [],
+      colors: {
+        "editor.background": "#282a36",
+        "editor.foreground": "#f8f8f2",
+        "editor.lineHighlightBackground": "#44475a",
+        "editorCursor.foreground": "#f8f8f2",
+        "editor.selectionBackground": "#44475a",
+        "editor.inactiveSelectionBackground": "#44475a70",
+      },
+    });
+
+    monaco.editor.setTheme("customDracula");
   };
 
-  // Handle special key events for editor-like experience
-  const handleKeyDown = (e) => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-
-    const { value, selectionStart, selectionEnd } = textarea;
-
-    // Tab key for indentation
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const newValue =
-        value.substring(0, selectionStart) +
-        "    " +
-        value.substring(selectionEnd);
-      setCode({ ...code, [language]: newValue });
-
-      // Set cursor position after the inserted tab
-      setTimeout(() => {
-        textarea.selectionStart = textarea.selectionEnd = selectionStart + 4;
-      }, 0);
-    }
-
-    // Enter key for auto-indentation
-    else if (e.key === "Enter") {
-      e.preventDefault();
-
-      // Get the current line's indentation
-      const currentLine = value.substring(0, selectionStart).split("\n").pop();
-      const indentMatch = currentLine.match(/^(\s*)/);
-      const currentIndent = indentMatch ? indentMatch[0] : "";
-
-      // Check if the line ends with an opening brace to add extra indentation
-      const addExtraIndent = currentLine.trim().endsWith("{");
-      const newIndent = addExtraIndent ? currentIndent + "    " : currentIndent;
-
-      // Insert the new line with proper indentation
-      const newValue =
-        value.substring(0, selectionStart) +
-        "\n" +
-        newIndent +
-        value.substring(selectionEnd);
-      setCode({ ...code, [language]: newValue });
-
-      // Set cursor position after the indentation
-      setTimeout(() => {
-        textarea.selectionStart = textarea.selectionEnd =
-          selectionStart + 1 + newIndent.length;
-      }, 0);
-    }
-
-    // Auto-close braces
-    else if (e.key === "{") {
-      e.preventDefault();
-      const newValue =
-        value.substring(0, selectionStart) +
-        "{" +
-        value.substring(selectionEnd);
-      setCode({ ...code, [language]: newValue });
-
-      // Set cursor position inside the braces
-      setTimeout(() => {
-        textarea.selectionStart = textarea.selectionEnd = selectionStart + 1;
-      }, 0);
-    }
+  const handleCodeChange = (value) => {
+    setCode({ ...code, [language]: value });
+    // Clear test results when code changes
+    setTestResults([]);
   };
 
   const runTestCase = (index) => {
@@ -170,7 +145,7 @@ const Coding = () => {
       .catch((error) => {
         console.error("Error running test case:", error);
         setRunningTest(null);
-        
+
         // Store the error with the test index
         const newTestResults = [...testResults];
         newTestResults[index] = {
@@ -180,38 +155,6 @@ const Coding = () => {
         setTestResults(newTestResults);
       });
   };
-
-  // const handleSubmit = () => {
-  //   setSubmitting(true);
-  //   setResults(null);
-
-  //   fetch("http://127.0.0.1:5000/submit_solution", {
-  //     method: "POST",
-  //     headers: {
-  //       "Content-Type": "application/json",
-  //     },
-  //     body: JSON.stringify({
-  //       question_description: question.description,
-  //       examples: question.examples,
-  //       language: language,
-  //       code: code[language],
-  //     }),
-  //   })
-  //     .then((response) => response.json())
-  //     .then((data) => {
-  //       setResults(data);
-  //       setSubmitting(false);
-  //     })
-  //     .catch((error) => {
-  //       console.error("Error submitting code:", error);
-  //       setSubmitting(false);
-  //       setResults({
-  //         success: false,
-  //         error: "Failed to submit solution. Please try again.",
-  //       });
-  //     });
-  // };
-
 
   const handleSubmit = () => {
     setSubmitting(true);
@@ -249,10 +192,6 @@ const Coding = () => {
       });
   };
 
-
-
-
-  
   // Helper function to convert difficulty to color
   const difficultyColor = (difficulty) => {
     switch (difficulty.toLowerCase()) {
@@ -531,10 +470,9 @@ const Coding = () => {
           ))}
         </div>
 
-        {/* Code Editor with Syntax Highlighting */}
+        {/* Monaco Code Editor */}
         <div
           style={{
-            position: "relative",
             marginTop: "10px",
             height: "calc(100vh - 300px)",
             border: "1px solid #6272a4",
@@ -542,74 +480,39 @@ const Coding = () => {
             overflow: "hidden",
           }}
         >
-          {/* Syntax highlighted code (read-only display layer) */}
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              padding: "8px",
-              pointerEvents: "none",
-              overflow: "hidden",
-            }}
-          >
-            <SyntaxHighlighter
-              language={language}
-              style={dracula}
-              customStyle={{
-                margin: 0,
-                padding: 0,
-                background: "transparent",
-                fontSize: "16px",
-                fontFamily: "'Fira Code', 'Consolas', monospace",
-                height: "100%",
-                width: "100%",
-                overflow: "hidden",
-              }}
-              codeTagProps={{
-                style: {
-                  fontFamily: "'Fira Code', 'Consolas', monospace",
-                },
-              }}
-            >
-              {code[language]}
-            </SyntaxHighlighter>
-          </div>
-
-          {/* Actual textarea for input (transparent background) */}
-          <textarea
-            ref={textareaRef}
+          <Editor
+            height="100%"
+            language={languageMap[language]}
             value={code[language]}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: "100%",
-              height: "100%",
-              backgroundColor: "transparent",
-              color: "transparent",
-              caretColor: "#f8f8f2", // Visible cursor
-              border: "none",
-              padding: "8px",
-              fontSize: "16px",
+            onChange={handleCodeChange}
+            onMount={handleEditorDidMount}
+            options={{
+              scrollBeyondLastLine: false,
+              minimap: { enabled: true },
               fontFamily: "'Fira Code', 'Consolas', monospace",
-              resize: "none",
-              outline: "none",
-              lineHeight: "1.5",
-              zIndex: 2,
-              whiteSpace: "pre",
-              overflowWrap: "normal",
-              overflow: "auto",
+              fontSize: 14,
+              lineNumbers: "on",
+              matchBrackets: "always",
+              automaticLayout: true,
               tabSize: 4,
+              formatOnType: true,
+              formatOnPaste: true,
+              bracketPairColorization: {
+                enabled: true,
+              },
+              suggest: {
+                showMethods: true,
+                showFunctions: true,
+                showConstructors: true,
+                showFields: true,
+                showVariables: true,
+                showClasses: true,
+                showStructs: true,
+                showInterfaces: true,
+                showEnums: true,
+                showEnumMembers: true,
+              },
             }}
-            spellCheck="false"
-            autoCapitalize="none"
-            autoComplete="off"
-            autoCorrect="off"
           />
         </div>
 
@@ -748,7 +651,6 @@ const Coding = () => {
                         justifyContent: "space-between",
                       }}
                     >
-                      // This completes the component from where it was cut off
                       <span>Test {test.test_number}</span>
                       <span
                         style={{ color: test.passed ? "#50fa7b" : "#ff5555" }}
