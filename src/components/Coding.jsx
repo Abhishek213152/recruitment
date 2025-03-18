@@ -13,6 +13,7 @@ SyntaxHighlighter.registerLanguage("python", python);
 
 const Coding = () => {
   const [isAccepted, setIsAccepted] = useState(false);
+  const [isFailed, setIsFailed] = useState(false);
   const [code, setCode] = useState({
     java: "",
     cpp: "",
@@ -36,7 +37,9 @@ const Coding = () => {
   const [submitting, setSubmitting] = useState(false);
   const [results, setResults] = useState(null);
   const [testResults, setTestResults] = useState([]);
+  const [allTestsRun, setAllTestsRun] = useState(false);
   const [runningTest, setRunningTest] = useState(null);
+  const [syntaxError, setSyntaxError] = useState(null);
   const editorRef = useRef(null);
 
   // Map language names to Monaco editor language identifiers
@@ -47,30 +50,122 @@ const Coding = () => {
   };
 
   useEffect(() => {
-    fetchQuestion();
+    // Check if there's a saved question in localStorage
+    const savedQuestion = localStorage.getItem("currentQuestion");
+    const savedCode = localStorage.getItem("currentCode");
+
+    if (savedQuestion && savedCode) {
+      setQuestion(JSON.parse(savedQuestion));
+      setCode(JSON.parse(savedCode));
+      setLoading(false);
+    } else {
+      fetchQuestion();
+    }
   }, []);
 
   // Reset test results when changing language
   useEffect(() => {
     setTestResults([]);
+    setAllTestsRun(false);
+    setIsAccepted(false);
+    setIsFailed(false);
+    setResults(null);
   }, [language]);
 
   const fetchQuestion = () => {
     setLoading(true);
     setResults(null);
     setTestResults([]);
-    setIsAccepted(false); // Reset the accepted state
+    setAllTestsRun(false);
+    setIsAccepted(false);
+    setIsFailed(false);
 
-    fetch("http://127.0.0.1:5000/get_question")
+    // Add force_new=true and current_id to ensure we get a new question
+    const params = new URLSearchParams({
+      force_new: "true",
+      current_id: question.id || "",
+    });
+
+    fetch(`http://127.0.0.1:5000/get_question?${params}`)
       .then((response) => response.json())
       .then((data) => {
+        // Modify Java function signature to have LeetCode-style formatting
+        if (data.function_signature && data.function_signature.java) {
+          const javaSignature = data.function_signature.java;
+
+          // Check if it's already in LeetCode format
+          if (!javaSignature.includes("class Solution")) {
+            // Extract the method signature
+            const methodMatch = javaSignature.match(
+              /(public|private|protected)?\s+([\w\s\[\]\.]+)\s*\((.*?)\)/
+            );
+            if (methodMatch) {
+              // Create LeetCode-style format
+              data.function_signature.java = `class Solution {
+    ${methodMatch[0]} {
+        
+    }
+}`;
+            }
+          }
+        }
+
+        // Modify C++ function signature to have LeetCode-style formatting
+        if (data.function_signature && data.function_signature.cpp) {
+          const cppSignature = data.function_signature.cpp;
+
+          // Check if it's already in LeetCode format
+          if (!cppSignature.includes("class Solution")) {
+            // Extract the function signature - matches return type, function name and parameters
+            const cppMethodMatch = cppSignature.match(
+              /([\w:]+(?:\s*<.*?>)?(?:\s*\*)?)\s+(\w+)\s*\((.*?)\)/
+            );
+            if (cppMethodMatch) {
+              // Create LeetCode-style format
+              data.function_signature.cpp = `class Solution {
+public:
+    ${cppMethodMatch[0]} {
+        
+    }
+};`;
+            }
+          }
+        }
+
+        // Modify Python function signature to have LeetCode-style formatting
+        if (data.function_signature && data.function_signature.python) {
+          const pythonSignature = data.function_signature.python;
+
+          // Check if it's already in LeetCode format
+          if (!pythonSignature.includes("class Solution")) {
+            // Extract the function definition - matches 'def', function name and parameters
+            const pythonMethodMatch = pythonSignature.match(
+              /def\s+(\w+)\s*\((.*?)\)(?:\s*->\s*([\w\[\],\s]+))?:/
+            );
+            if (pythonMethodMatch) {
+              const fullSignature = pythonSignature.split("\n")[0]; // Get the first line with the function definition
+
+              // Create LeetCode-style format
+              data.function_signature.python = `class Solution:
+    ${fullSignature}
+        `;
+            }
+          }
+        }
+
         setQuestion(data);
         // Initialize code editor with function signatures
-        setCode({
+        const newCode = {
           java: data.function_signature?.java || "// Add your solution here",
           cpp: data.function_signature?.cpp || "// Add your solution here",
           python: data.function_signature?.python || "# Add your solution here",
-        });
+        };
+        setCode(newCode);
+
+        // Save to localStorage
+        localStorage.setItem("currentQuestion", JSON.stringify(data));
+        localStorage.setItem("currentCode", JSON.stringify(newCode));
+
         setLoading(false);
       })
       .catch((error) => {
@@ -83,47 +178,127 @@ const Coding = () => {
   const handleEditorDidMount = (editor, monaco) => {
     editorRef.current = editor;
 
+    // Define custom theme
+    monaco.editor.defineTheme("customDracula", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: "#6272a4" },
+        { token: "keyword", foreground: "#ff79c6" },
+        { token: "string", foreground: "#f1fa8c" },
+        { token: "number", foreground: "#bd93f9" },
+        { token: "type", foreground: "#8be9fd" },
+      ],
+      colors: {
+        "editor.background": "#282a36",
+        "editor.foreground": "#f8f8f2",
+        "editor.lineHighlightBackground": "#282a36",
+        "editor.lineHighlightBorder": "#282a36",
+        "editorCursor.foreground": "#f8f8f2",
+        "editor.selectionBackground": "#44475a",
+        "editor.inactiveSelectionBackground": "#44475a70",
+        "editorLineNumber.foreground": "#6272a4",
+        "editor.selectionHighlightBackground": "#424450",
+        "editorWhitespace.foreground": "#3B3A32",
+      },
+    });
+
+    // Apply the theme
+    monaco.editor.setTheme("customDracula");
+
     // Set editor options
     editor.updateOptions({
       scrollBeyondLastLine: false,
       minimap: { enabled: true },
       fontFamily: "'Fira Code', 'Consolas', monospace",
-      fontSize: 14,
+      fontSize: 16,
       lineNumbers: "on",
       matchBrackets: "always",
       automaticLayout: true,
       tabSize: 4,
+      renderWhitespace: "none", // Hide whitespace characters
+      renderLineHighlight: "all",
+      renderIndentGuides: true,
     });
-
-    // Add auto bracket closing
-    monaco.editor.defineTheme("customDracula", {
-      base: "vs-dark",
-      inherit: true,
-      rules: [],
-      colors: {
-        "editor.background": "#282a36",
-        "editor.foreground": "#f8f8f2",
-        "editor.lineHighlightBackground": "#44475a",
-        "editorCursor.foreground": "#f8f8f2",
-        "editor.selectionBackground": "#44475a",
-        "editor.inactiveSelectionBackground": "#44475a70",
-      },
-    });
-
-    monaco.editor.setTheme("customDracula");
   };
 
   const handleCodeChange = (value) => {
     setCode({ ...code, [language]: value });
     // Clear test results when code changes
     setTestResults([]);
+    setAllTestsRun(false);
+    setIsAccepted(false);
+    setIsFailed(false);
+    setResults(null);
+    setSyntaxError(null); // Reset syntax error on code change
+  };
+
+  // Check if code is valid (not empty or just the template)
+  const isCodeValid = () => {
+    const currentCode = code[language];
+    const isFunctionSignatureOnly =
+      currentCode === question.function_signature?.[language] ||
+      currentCode === `// Add your solution here` ||
+      currentCode === `# Add your solution here` ||
+      !currentCode.trim();
+
+    return !isFunctionSignatureOnly;
+  };
+
+  // Check if all tests have been run and all passed
+  const checkAllTestsPassed = () => {
+    if (testResults.length === question.examples.length) {
+      // Ensure all test results are present (not null or undefined)
+      const allResultsPresent = testResults.every(
+        (result) => result !== null && result !== undefined
+      );
+
+      if (allResultsPresent) {
+        const allPassed = testResults.every((result) => result.passed);
+        setIsAccepted(allPassed);
+        setIsFailed(!allPassed);
+        setAllTestsRun(true);
+      }
+    } else {
+      setAllTestsRun(false);
+    }
+  };
+
+  // Standardize test result format between individual tests and submission
+  const formatTestResult = (data, index) => {
+    return {
+      passed: data.passed,
+      actual_output: data.actual_output || "No output",
+      explanation: data.passed ? "" : data.explanation || "Test failed",
+      test_number: index + 1,
+      input: question.examples[index].input,
+      expected_output: question.examples[index].output,
+    };
   };
 
   const runTestCase = (index) => {
+    // Check if code is valid before running test
+    if (!isCodeValid()) {
+      const invalidResult = {
+        passed: false,
+        actual_output: "No valid code",
+        explanation: "Please add your solution before running the test.",
+        test_number: index + 1,
+        input: question.examples[index].input,
+        expected_output: question.examples[index].output,
+      };
+
+      const newTestResults = [...testResults];
+      newTestResults[index] = invalidResult;
+      setTestResults(newTestResults);
+      setIsFailed(true);
+      return Promise.resolve(invalidResult);
+    }
+
     const testCase = question.examples[index];
     setRunningTest(index);
 
-    fetch("http://127.0.0.1:5000/run_test_case", {
+    return fetch("http://127.0.0.1:5000/run_test_case", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -136,60 +311,118 @@ const Coding = () => {
     })
       .then((response) => response.json())
       .then((data) => {
-        // Store the result with the test index
+        // Check for syntax or compilation errors
+        if (
+          (data.error && data.error.includes("syntax")) ||
+          (data.error && data.error.includes("compilation"))
+        ) {
+          setSyntaxError(data.error);
+        } else {
+          setSyntaxError(null);
+        }
+
+        // Format the result
+        const result = formatTestResult(data, index);
+
+        // Update the test results state
         const newTestResults = [...testResults];
-        newTestResults[index] = data;
+        newTestResults[index] = result;
         setTestResults(newTestResults);
         setRunningTest(null);
+
+        // Check if all tests are passed after each test run
+        if (
+          newTestResults.filter((r) => r !== null && r !== undefined).length ===
+          question.examples.length
+        ) {
+          setTimeout(() => checkAllTestsPassed(), 100);
+        }
+
+        return data;
       })
       .catch((error) => {
         console.error("Error running test case:", error);
         setRunningTest(null);
 
+        // Create an error result
+        const errorResult = {
+          passed: false,
+          actual_output: "Error",
+          explanation: "Failed to run test case. Please try again.",
+          test_number: index + 1,
+          input: testCase.input,
+          expected_output: testCase.output,
+        };
+
         // Store the error with the test index
         const newTestResults = [...testResults];
-        newTestResults[index] = {
-          passed: false,
-          error: "Failed to run test case. Please try again.",
-        };
+        newTestResults[index] = errorResult;
         setTestResults(newTestResults);
+        setIsFailed(true);
+
+        return errorResult; // Return the error result instead of throwing
       });
   };
 
   const handleSubmit = () => {
+    // Check if code is valid before submission
+    if (!isCodeValid()) {
+      setResults({
+        success: false,
+        error: "Please add your solution before submitting.",
+        test_results: question.examples.map((example, index) => ({
+          passed: false,
+          actual_output: "No valid code",
+          explanation: "No valid solution provided",
+          test_number: index + 1,
+          input: example.input,
+          expected_output: example.output,
+        })),
+        passed_tests: 0,
+        total_tests: question.examples.length,
+      });
+      setIsFailed(true);
+      return;
+    }
+
+    // Check if all test cases have been run individually
+    const allTestsAttempted =
+      testResults.length === question.examples.length &&
+      testResults.every((result) => result !== null && result !== undefined);
+
+    if (!allTestsAttempted) {
+      // Show message asking user to run all test cases individually first
+      setResults({
+        success: false,
+        error: "Please run all test cases individually before submitting.",
+        test_results: [],
+        passed_tests: 0,
+        total_tests: question.examples.length,
+      });
+      setIsFailed(true);
+      return;
+    }
+
     setSubmitting(true);
     setResults(null);
 
-    fetch("http://127.0.0.1:5000/submit_solution", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        question_description: question.description,
-        examples: question.examples,
-        language: language,
-        code: code[language],
-      }),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        setResults(data);
-        setSubmitting(false);
+    // All tests have already been run individually, use the existing results
+    const validResults = testResults.filter(
+      (result) => result !== null && result !== undefined
+    );
+    const passedTests = validResults.filter((result) => result.passed).length;
 
-        // Set isAccepted to true if all tests passed
-        if (data.success === true) {
-          setIsAccepted(true);
-        }
-      })
-      .catch((error) => {
-        console.error("Error submitting code:", error);
-        setSubmitting(false);
-        setResults({
-          success: false,
-          error: "Failed to submit solution. Please try again.",
-        });
-      });
+    setSubmitting(false);
+    setResults({
+      success: passedTests === question.examples.length,
+      test_results: testResults,
+      passed_tests: passedTests,
+      total_tests: question.examples.length,
+      execution_time: "N/A",
+      memory_usage: "N/A",
+    });
+    setIsAccepted(passedTests === question.examples.length);
+    setIsFailed(passedTests !== question.examples.length);
   };
 
   // Helper function to convert difficulty to color
@@ -235,6 +468,7 @@ const Coding = () => {
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
+            marginBottom: "15px",
           }}
         >
           <h1
@@ -244,15 +478,17 @@ const Coding = () => {
           </h1>
           <button
             onClick={fetchQuestion}
+            disabled={loading}
             style={{
-              backgroundColor: "#bd93f9",
-              color: "white",
+              backgroundColor: loading ? "#6272a4" : "#50fa7b",
+              color: "#282a36",
               border: "none",
-              padding: "8px 12px",
+              padding: "8px 16px",
               borderRadius: "4px",
-              cursor: "pointer",
-              fontWeight: "bold",
+              cursor: loading ? "not-allowed" : "pointer",
               fontSize: "14px",
+              fontWeight: "bold",
+              transition: "background-color 0.3s ease",
             }}
           >
             {loading ? "Loading..." : "New Question"}
@@ -304,8 +540,20 @@ const Coding = () => {
             <h2
               style={{ color: "#8be9fd", fontSize: "18px", marginTop: "15px" }}
             >
-              🔹 Examples:
+              Examples:
             </h2>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "10px",
+              }}
+            >
+              <span style={{ fontSize: "14px", color: "#f8f8f2" }}>
+                Run tests individually before submitting:
+              </span>
+            </div>
             {question.examples &&
               question.examples.map((example, index) => (
                 <div
@@ -370,41 +618,53 @@ const Coding = () => {
                     </div>
                   </div>
                   <div>
-                    <strong>Input:</strong> {example.input} <br />
-                    <strong>Output:</strong> {example.output}
+                    <strong>Input:</strong>{" "}
+                    {example.input
+                      .replace(/`/g, "")
+                      .replace(/nums = /g, "")
+                      .replace(/'/g, "")}
+                    <br />
+                    <strong>Output:</strong>{" "}
+                    {example.output.replace(/`/g, "").replace(/'/g, "")}
                     {example.explanation && (
                       <>
                         <br />
-                        <strong>Explanation:</strong> {example.explanation}
+                        <strong>Explanation:</strong>{" "}
+                        {example.explanation
+                          .replace(/`/g, "")
+                          .replace(/'/g, "")}
                       </>
                     )}
                   </div>
 
                   {/* Display test case result */}
-                  {testResults[index] && testResults[index].explanation && (
-                    <div
-                      style={{
-                        marginTop: "8px",
-                        padding: "8px",
-                        backgroundColor: testResults[index].passed
-                          ? "rgba(80, 250, 123, 0.1)"
-                          : "rgba(255, 85, 85, 0.1)",
-                        borderRadius: "4px",
-                        fontSize: "12px",
-                      }}
-                    >
-                      <div>
-                        <strong>Your Output:</strong>{" "}
-                        {testResults[index].actual_output}
-                      </div>
-                      {!testResults[index].passed && (
+                  {testResults[index] &&
+                    (testResults[index].explanation ||
+                      testResults[index].error) && (
+                      <div
+                        style={{
+                          marginTop: "8px",
+                          padding: "8px",
+                          backgroundColor: testResults[index].passed
+                            ? "rgba(80, 250, 123, 0.1)"
+                            : "rgba(255, 85, 85, 0.1)",
+                          borderRadius: "4px",
+                          fontSize: "12px",
+                        }}
+                      >
                         <div>
-                          <strong>Why it failed:</strong>{" "}
-                          {testResults[index].explanation}
+                          <strong>Your Output:</strong>{" "}
+                          {testResults[index].actual_output}
                         </div>
-                      )}
-                    </div>
-                  )}
+                        {!testResults[index].passed && (
+                          <div>
+                            <strong>Why it failed:</strong>{" "}
+                            {testResults[index].explanation ||
+                              testResults[index].error}
+                          </div>
+                        )}
+                      </div>
+                    )}
                 </div>
               ))}
 
@@ -418,7 +678,7 @@ const Coding = () => {
                     marginTop: "15px",
                   }}
                 >
-                  🔹 Constraints:
+                  Constraints:
                 </h2>
                 <ul style={{ paddingLeft: "20px", margin: "5px 0" }}>
                   {question.constraints.map((constraint, index) => (
@@ -426,7 +686,7 @@ const Coding = () => {
                       key={index}
                       style={{ fontSize: "14px", marginBottom: "5px" }}
                     >
-                      {constraint}
+                      {constraint.replace(/`/g, "")}
                     </li>
                   ))}
                 </ul>
@@ -475,9 +735,11 @@ const Coding = () => {
           style={{
             marginTop: "10px",
             height: "calc(100vh - 300px)",
-            border: "1px solid #6272a4",
+            border: "none",
             borderRadius: "4px",
             overflow: "hidden",
+            backgroundColor: "#282a36", // Match the editor theme background
+            boxShadow: "none", // Remove any default shadow that might cause blur
           }}
         >
           <Editor
@@ -490,7 +752,7 @@ const Coding = () => {
               scrollBeyondLastLine: false,
               minimap: { enabled: true },
               fontFamily: "'Fira Code', 'Consolas', monospace",
-              fontSize: 14,
+              fontSize: 16,
               lineNumbers: "on",
               matchBrackets: "always",
               automaticLayout: true,
@@ -513,6 +775,7 @@ const Coding = () => {
                 showEnumMembers: true,
               },
             }}
+            theme="customDracula"
           />
         </div>
 
@@ -581,6 +844,34 @@ const Coding = () => {
           >
             ✨ Accepted ✨
           </button>
+        ) : isFailed ? (
+          <button
+            onClick={handleSubmit}
+            disabled={loading || submitting}
+            style={{
+              marginTop: "10px",
+              backgroundColor: "#ff5555",
+              color: "#f8f8f2",
+              border: "none",
+              padding: "10px 15px",
+              borderRadius: "4px",
+              cursor: loading || submitting ? "not-allowed" : "pointer",
+              fontWeight: "bold",
+              fontSize: "16px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "background-color 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.backgroundColor = "#bd93f9";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.backgroundColor = "#ff5555";
+            }}
+          >
+            ⟳ Re-submit
+          </button>
         ) : (
           <button
             onClick={handleSubmit}
@@ -628,7 +919,13 @@ const Coding = () => {
                 : "❌ Some Tests Failed"}
             </h3>
 
-            {results.test_results && (
+            {results.error && (
+              <div style={{ color: "#ff5555", marginBottom: "15px" }}>
+                <p>{results.error}</p>
+              </div>
+            )}
+
+            {results.test_results && results.test_results.length > 0 ? (
               <div>
                 <p style={{ fontSize: "14px", marginBottom: "10px" }}>
                   Passed {results.passed_tests} of {results.total_tests} tests
@@ -653,7 +950,7 @@ const Coding = () => {
                     >
                       <span>Test {test.test_number}</span>
                       <span
-                        style={{ color: test.passed ? "#50fa7b" : "#ff5555" }}
+                        style={{ color: test.passed ? "#50fa7b " : "#ff5555" }}
                       >
                         {test.passed ? "Passed ✓" : "Failed ✗"}
                       </span>
@@ -679,13 +976,24 @@ const Coding = () => {
                   </div>
                 ))}
               </div>
-            )}
-
-            {results.error && (
-              <div style={{ color: "#ff5555" }}>
-                <p>{results.error}</p>
+            ) : results.error &&
+              results.error.includes("run all test cases") ? (
+              <div style={{ textAlign: "center", padding: "10px" }}>
+                <p>
+                  Please run each test case individually by clicking the "Run
+                  Test" button next to each example.
+                </p>
+                <p
+                  style={{
+                    marginTop: "10px",
+                    fontSize: "14px",
+                    color: "#ff79c6",
+                  }}
+                >
+                  Once all tests are run, you can submit your solution.
+                </p>
               </div>
-            )}
+            ) : null}
 
             {results.execution_time && (
               <div style={{ marginTop: "10px", fontSize: "14px" }}>
