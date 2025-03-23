@@ -3,6 +3,7 @@ import React from "react";
 import Home from "./components/Home";
 import Sidebar from "./components/Sidebar";
 import Coding from "./components/Coding";
+import Interview from "./components/Interview";
 
 const App = () => {
   return (
@@ -11,6 +12,7 @@ const App = () => {
         <Route path="/" element={<Home />} />
         <Route path="/a" element={<Sidebar />} />
         <Route path="/coding" element={<Coding />} />
+        <Route path="/interview" element={<Interview />} />
       </Routes>
     </div>
   );
