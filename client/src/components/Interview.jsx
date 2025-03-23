@@ -17,6 +17,9 @@ const Interview = () => {
   const [assessment, setAssessment] = useState(null);
   const voiceMode = true;
   const [audioElement, setAudioElement] = useState(null);
+  const [lastSpeechTime, setLastSpeechTime] = useState(null);
+  const silenceTimerRef = useRef(null);
+  const [silenceCountdown, setSilenceCountdown] = useState(0);
 
   // References
   const messagesEndRef = useRef(null);
@@ -50,21 +53,79 @@ const Interview = () => {
     }
   }, [isInterviewStarted, isListening, isSpeaking, messages]);
 
-  // Initialize speech recognition with simpler implementation
+  // Initialize speech recognition with silence detection
   useEffect(() => {
     if ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) {
       const SpeechRecognition =
         window.SpeechRecognition || window.webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
       recognitionRef.current.continuous = false; // Use single recognition mode
-      recognitionRef.current.interimResults = false; // Only get final results
+      recognitionRef.current.interimResults = true; // Get interim results for better UX
       recognitionRef.current.lang = "en-US";
 
       recognitionRef.current.onresult = (event) => {
+        // Get either final or interim result
+        const isFinal = event.results[event.results.length - 1].isFinal;
         const transcript =
           event.results[event.results.length - 1][0].transcript;
+
+        // Always update the input field with the latest transcript
         setUserInput(transcript);
-        console.log("Speech recognized:", transcript);
+
+        // Update last speech time whenever we get a result
+        setLastSpeechTime(Date.now());
+
+        // Clear any existing silence timer
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+
+        // Reset countdown
+        setSilenceCountdown(0);
+
+        // If we have text, start the silence detection countdown
+        if (transcript && transcript.trim()) {
+          // Start visual countdown from 100 to 0 over 4 seconds
+          let countdown = 100;
+          const countdownInterval = setInterval(() => {
+            countdown -= 2.5; // Decrease by 2.5 every 100ms (40 steps for 4 seconds)
+            if (countdown <= 0) {
+              clearInterval(countdownInterval);
+              countdown = 0;
+            }
+            setSilenceCountdown(countdown);
+          }, 100);
+
+          // Set the silence timer to send the message after 4 seconds
+          silenceTimerRef.current = setTimeout(() => {
+            clearInterval(countdownInterval);
+            setSilenceCountdown(0);
+            console.log("Silence detected for 4 seconds");
+            if (transcript && transcript.trim() && isListening) {
+              console.log("Auto-sending message after silence");
+              sendResponse(transcript.trim());
+            }
+          }, 4000);
+        }
+
+        if (isFinal) {
+          console.log("Final speech recognized:", transcript);
+          // For final results, clear the countdown and send immediately
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+          }
+          setSilenceCountdown(0);
+
+          // Auto-send after final speech recognition
+          setTimeout(() => {
+            if (transcript && transcript.trim()) {
+              console.log("Auto-sending message after speech completed");
+              sendResponse(transcript.trim());
+            }
+          }, 300);
+        }
       };
 
       recognitionRef.current.onstart = () => {
@@ -111,6 +172,13 @@ const Interview = () => {
     }
 
     return () => {
+      // Clean up silence timer
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+      setSilenceCountdown(0);
+
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
@@ -268,19 +336,21 @@ const Interview = () => {
     }
   };
 
-  // Send user response
-  const sendResponse = async () => {
-    if (!userInput.trim() || !sessionId) return;
+  // Send response function (modify to accept an optional parameter)
+  const sendResponse = async (manualInput = "") => {
+    // Use either the provided input or the current userInput state
+    const messageToSend = manualInput || userInput.trim();
 
-    const userMessage = userInput.trim();
-    setUserInput("");
+    if (!messageToSend || !sessionId) return;
+
+    setUserInput(""); // Clear input field
 
     // Add user message to chat
     setMessages((prev) => [
       ...prev,
       {
         role: "user",
-        content: userMessage,
+        content: messageToSend,
       },
     ]);
 
@@ -289,7 +359,7 @@ const Interview = () => {
     try {
       const response = await axios.post(`${API_URL}/interview_response`, {
         session_id: sessionId,
-        message: userMessage,
+        message: messageToSend,
       });
 
       if (response.data.success) {
@@ -345,19 +415,47 @@ const Interview = () => {
     }
   };
 
-  // Simple playServerAudio function
+  // Make sure the isSpeaking state properly controls the microphone
+  useEffect(() => {
+    // Stop listening when AI starts speaking
+    if (isSpeaking && recognitionRef.current) {
+      console.log("AI speaking - ensuring microphone is completely off");
+      stopListening(); // Immediately stop listening when AI starts speaking
+    }
+
+    // Only start listening again when AI stops speaking and interview is active
+    if (
+      !isSpeaking &&
+      !isListening &&
+      isInterviewStarted &&
+      messages.length > 0
+    ) {
+      console.log("AI stopped speaking - waiting before restarting microphone");
+      // Add a longer delay to make sure the AI has completely finished
+      const timer = setTimeout(() => {
+        if (!isSpeaking) {
+          // Double check AI is still not speaking
+          console.log("Starting microphone after AI finished speaking");
+          startListening();
+        }
+      }, 1500); // Longer delay to ensure AI audio is completely done
+
+      return () => clearTimeout(timer);
+    }
+  }, [isSpeaking, isListening, isInterviewStarted, messages]);
+
+  // Update playServerAudio to completely shut off microphone
   const playServerAudio = (audioUrl) => {
     stopSpeech();
 
+    // Force stop listening before playing audio
+    if (recognitionRef.current) {
+      console.log("Stopping microphone before playing audio");
+      stopListening();
+    }
+
     // Debug log the audio URL
     console.log("Received audio URL:", audioUrl);
-
-    // Stop listening while audio plays
-    if (isListening && recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {}
-    }
 
     let audio = audioElement;
     if (!audio) {
@@ -373,24 +471,19 @@ const Interview = () => {
     audio.onplay = () => {
       console.log("Audio started playing");
       setIsSpeaking(true);
+      // Double-check microphone is definitely off when audio plays
+      if (recognitionRef.current) {
+        stopListening();
+      }
     };
 
     audio.onended = () => {
       console.log("Audio playback completed");
       setIsSpeaking(false);
-      // Restart listening after audio ends
-      setTimeout(() => {
-        if (isInterviewStarted && recognitionRef.current) {
-          try {
-            recognitionRef.current.start();
-            console.log("Restarted listening after audio ended");
-          } catch (e) {
-            console.error("Failed to restart listening after audio ended:", e);
-          }
-        }
-      }, 500);
+      // The useEffect will handle restarting the microphone after a delay
     };
 
+    // Update error handling
     audio.onerror = (e) => {
       console.error("Audio error:", e);
       console.error(
@@ -402,11 +495,15 @@ const Interview = () => {
         audio.error ? audio.error.message : "unknown"
       );
       setIsSpeaking(false);
-      const currentMessage = messages[messages.length - 1]?.content;
-      if (currentMessage) {
-        console.log("Falling back to browser TTS due to audio error");
-        speakText(currentMessage);
-      }
+
+      // Delay handling the error to avoid immediate microphone activation
+      setTimeout(() => {
+        const currentMessage = messages[messages.length - 1]?.content;
+        if (currentMessage) {
+          console.log("Falling back to browser TTS due to audio error");
+          speakText(currentMessage);
+        }
+      }, 500);
     };
 
     // Full URL with cachebuster to prevent caching issues
@@ -417,26 +514,39 @@ const Interview = () => {
     audio.src = fullUrl;
     audio.load();
 
-    // Play with retry with a slightly longer delay
+    // Play with retry with a longer delay
     setTimeout(() => {
+      // Ensure microphone is still off before playing
+      if (isListening) {
+        stopListening();
+      }
+
       console.log("Attempting to play audio...");
       audio.play().catch((error) => {
         console.error("Failed to play audio:", error);
         // Try again after a delay
         setTimeout(() => {
+          // Ensure microphone is still off before retrying
+          if (isListening) {
+            stopListening();
+          }
+
           console.log("Retrying audio playback...");
           audio.play().catch((retryError) => {
             console.error("Retry also failed:", retryError);
-            // Fall back to browser TTS
-            const currentMessage = messages[messages.length - 1]?.content;
-            if (currentMessage) {
-              console.log("Falling back to browser TTS after retry failure");
-              speakText(currentMessage);
-            }
+            // Delay the fallback to ensure microphone doesn't pick up TTS
+            setTimeout(() => {
+              // Fall back to browser TTS
+              const currentMessage = messages[messages.length - 1]?.content;
+              if (currentMessage) {
+                console.log("Falling back to browser TTS after retry failure");
+                speakText(currentMessage);
+              }
+            }, 500);
           });
         }, 1000);
       });
-    }, 500); // Increased delay for better reliability
+    }, 800); // Longer initial delay for more reliable audio playback
   };
 
   // Text-to-speech functionality (browser-based fallback)
@@ -445,11 +555,10 @@ const Interview = () => {
       // Stop any ongoing speech
       stopSpeech();
 
-      // Stop listening while AI speaks
-      if (isListening && recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {}
+      // Force stop listening before speaking
+      if (recognitionRef.current) {
+        console.log("Ensuring microphone is completely off before browser TTS");
+        stopListening();
       }
 
       // Create new utterance
@@ -480,25 +589,48 @@ const Interview = () => {
         }
 
         // Set events
-        utterance.onstart = () => setIsSpeaking(true);
-        utterance.onend = () => {
-          setIsSpeaking(false);
-          // Restart listening after speech ends
-          setTimeout(() => {
-            if (isInterviewStarted && recognitionRef.current) {
-              try {
-                recognitionRef.current.start();
-                console.log("Restarted speech recognition after TTS ended");
-              } catch (e) {
-                console.error(
-                  "Failed to restart listening after TTS ended:",
-                  e
-                );
-              }
+        utterance.onstart = () => {
+          console.log("Browser TTS started");
+          setIsSpeaking(true);
+          // Double-check microphone is definitely off when TTS starts
+          if (recognitionRef.current) {
+            stopListening();
+          }
+
+          // Set a periodic check to ensure mic stays off during speech
+          const checkInterval = setInterval(() => {
+            if (isListening && recognitionRef.current) {
+              console.log(
+                "Detected microphone activated during speech - stopping it"
+              );
+              stopListening();
             }
           }, 500);
+
+          // Store the interval ID for cleanup
+          utterance.checkIntervalId = checkInterval;
         };
-        utterance.onerror = () => setIsSpeaking(false);
+
+        utterance.onend = () => {
+          console.log("Browser TTS ended");
+          // Clear the interval check
+          if (utterance.checkIntervalId) {
+            clearInterval(utterance.checkIntervalId);
+          }
+
+          setIsSpeaking(false);
+          // The useEffect will handle restarting the microphone after delay
+        };
+
+        utterance.onerror = (e) => {
+          console.error("Browser TTS error:", e);
+          // Clear the interval check
+          if (utterance.checkIntervalId) {
+            clearInterval(utterance.checkIntervalId);
+          }
+
+          setIsSpeaking(false);
+        };
 
         // Store reference and speak
         speechSynthesisRef.current = utterance;
@@ -508,9 +640,15 @@ const Interview = () => {
   };
 
   const stopSpeech = () => {
+    console.log("Stopping all speech output");
+
     // Stop browser speech synthesis
     if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch (e) {
+        console.error("Error canceling speech synthesis:", e);
+      }
     }
 
     // Stop audio playback if it exists
@@ -527,44 +665,129 @@ const Interview = () => {
     setIsSpeaking(false);
   };
 
-  // Simple speech functions
+  // Enhanced speech functions with silence timer cleanup
   const startListening = () => {
     if (!recognitionRef.current) return;
+
+    // Don't start if AI is speaking
+    if (isSpeaking) {
+      console.log("Cannot start listening while AI is speaking");
+      return;
+    }
 
     // Clear the input when starting to listen
     setUserInput("");
 
+    // Reset silence detection
+    setLastSpeechTime(null);
+    setSilenceCountdown(0);
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+
     try {
+      console.log("Starting speech recognition");
       recognitionRef.current.start();
-      console.log("Manually started speech recognition");
+      console.log("Successfully started speech recognition");
     } catch (e) {
-      console.error("Error starting recognition:", e);
+      console.error("Error starting speech recognition:", e);
       // If already started, stop and restart
       if (e.message && e.message.includes("already started")) {
         try {
           recognitionRef.current.stop();
+          console.log("Stopped already-running recognition");
+
           setTimeout(() => {
-            recognitionRef.current.start();
-          }, 100);
-        } catch (innerError) {
-          console.error("Failed to restart recognition:", innerError);
+            try {
+              recognitionRef.current.start();
+              console.log("Restarted recognition after stopping");
+            } catch (innerError) {
+              console.error("Failed to restart recognition:", innerError);
+            }
+          }, 300);
+        } catch (stopError) {
+          console.error(
+            "Error stopping already-running recognition:",
+            stopError
+          );
         }
       }
     }
   };
 
   const stopListening = () => {
-    if (recognitionRef.current) {
+    console.log("STOPPING SPEECH RECOGNITION");
+
+    // Clear silence timer when stopping listening
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+
+    // Set isListening to false immediately for immediate UI feedback
+    setIsListening(false);
+
+    if (!recognitionRef.current) {
+      console.log("No recognition instance to stop");
+      return;
+    }
+
+    try {
+      // First attempt to abort
+      try {
+        recognitionRef.current.abort();
+        console.log("Successfully aborted speech recognition");
+      } catch (abortError) {
+        console.log("Abort not available or failed:", abortError);
+      }
+
+      // Then try to stop
       try {
         recognitionRef.current.stop();
-        console.log("Manually stopped speech recognition");
-      } catch (e) {
-        console.error("Error stopping recognition:", e);
+        console.log("Successfully stopped speech recognition");
+      } catch (stopError) {
+        console.error("Error stopping speech recognition:", stopError);
       }
+
+      // If still having issues, try recreating the recognition object
+      if (isListening) {
+        console.log(
+          "Recognition still active after stop attempts, recreating object"
+        );
+        try {
+          const SpeechRecognition =
+            window.SpeechRecognition || window.webkitSpeechRecognition;
+          recognitionRef.current = new SpeechRecognition();
+          recognitionRef.current.continuous = false;
+          recognitionRef.current.interimResults = true;
+          recognitionRef.current.lang = "en-US";
+
+          // Reinitialize basic event handlers
+          recognitionRef.current.onstart = () => setIsListening(true);
+          recognitionRef.current.onend = () => setIsListening(false);
+
+          console.log("Successfully recreated speech recognition object");
+        } catch (e) {
+          console.error("Failed to recreate speech recognition:", e);
+        }
+      }
+    } catch (e) {
+      console.error("Multiple errors stopping speech recognition:", e);
     }
+
+    // Final check
+    setTimeout(() => {
+      if (isListening) {
+        console.log(
+          "WARNING: isListening still true after stopping - forcing to false"
+        );
+        setIsListening(false);
+      }
+    }, 100);
   };
 
-  // Speech recognition toggle
+  // Speech recognition toggle - update to automatically restart listening
   const toggleListening = () => {
     if (!recognitionRef.current) {
       alert("Speech recognition is not supported in your browser");
@@ -612,6 +835,21 @@ const Interview = () => {
     );
   };
 
+  // Show the silence countdown in the UI
+  const renderSilenceIndicator = () => {
+    if (silenceCountdown > 0 && userInput && isListening) {
+      return (
+        <div className="absolute bottom-0 left-0 w-full h-1 bg-gray-200">
+          <div
+            className="h-full bg-green-500 transition-all duration-100"
+            style={{ width: `${silenceCountdown}%` }}
+          ></div>
+        </div>
+      );
+    }
+    return null;
+  };
+
   return (
     <div className="interview-container max-w-4xl mx-auto p-4">
       {!isInterviewStarted ? (
@@ -633,11 +871,12 @@ const Interview = () => {
             </div>
 
             <div className="mb-6">
-              <label className="block text-gray-700 mb-2">
-                Upload Resume (Optional)
-              </label>
-              <div className="border rounded-lg p-4 flex items-center justify-center">
-                <label className="cursor-pointer flex flex-col items-center">
+              <label className="block text-gray-700 mb-2">Upload Resume</label>
+              <div
+                className="border rounded-lg p-4 flex items-center justify-center cursor-pointer hover:bg-blue-50 transition"
+                onClick={() => document.getElementById("resume-upload").click()}
+              >
+                <div className="flex flex-col items-center">
                   <FaFileUpload className="text-3xl mb-2 text-blue-500" />
                   <span className="text-sm text-gray-500">
                     {resumeFile
@@ -645,19 +884,20 @@ const Interview = () => {
                       : "Click to upload PDF/DOC/TXT"}
                   </span>
                   <input
+                    id="resume-upload"
                     type="file"
                     className="hidden"
                     accept=".pdf,.doc,.docx,.txt,.rtf"
                     onChange={handleFileChange}
                   />
-                </label>
+                </div>
               </div>
             </div>
 
             <div className="mb-6 text-sm text-gray-600 p-2 bg-blue-50 rounded">
               <p>
                 <span className="font-semibold">Voice Mode Enabled:</span> Your
-                interview will be conducted by our Male Indian AI Interviewer.
+                interview will be conducted by our AI Interviewer.
               </p>
             </div>
 
@@ -679,7 +919,7 @@ const Interview = () => {
         <div className="bg-white shadow-md rounded-lg overflow-hidden">
           <div className="bg-blue-600 text-white p-4">
             <h2 className="text-xl font-semibold">
-              Technical Interview with Male Indian AI
+              Technical Interview with AI
             </h2>
             {sessionId && (
               <p className="text-sm opacity-75">
@@ -819,28 +1059,51 @@ const Interview = () => {
                     <FaPause />
                   </button>
 
-                  <div className="relative flex-1">
-                    <input
-                      type="text"
-                      className="w-full p-3 border rounded-l-lg"
-                      placeholder="Press microphone to speak or type here"
-                      value={userInput}
-                      onChange={(e) => setUserInput(e.target.value)}
-                      onKeyPress={(e) => {
-                        if (e.key === "Enter") {
-                          sendResponse();
-                        }
-                      }}
-                    />
-                  </div>
+                  {/* Show recognized speech as text without an input field */}
+                  {userInput && isListening && (
+                    <div className="flex-1 p-3 border border-blue-300 bg-blue-50 rounded-lg text-gray-700 relative">
+                      {userInput}
+                      <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                        <div className="flex space-x-1">
+                          <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                          <div
+                            className="w-2 h-2 bg-red-500 rounded-full animate-pulse"
+                            style={{ animationDelay: "0.2s" }}
+                          ></div>
+                          <div
+                            className="w-2 h-2 bg-red-500 rounded-full animate-pulse"
+                            style={{ animationDelay: "0.4s" }}
+                          ></div>
+                        </div>
+                      </div>
+                      {renderSilenceIndicator()}
+                    </div>
+                  )}
 
-                  <button
-                    onClick={sendResponse}
-                    className="bg-blue-600 text-white px-4 py-3 rounded-r-lg hover:bg-blue-700 transition"
-                    disabled={!userInput.trim() || isLoading}
-                  >
-                    Send
-                  </button>
+                  {!userInput && isListening && (
+                    <div className="flex-1 p-3 border border-blue-200 bg-gray-50 rounded-lg text-gray-500 italic relative">
+                      Listening... speak clearly into your microphone
+                      <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                        <div className="flex space-x-1">
+                          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                          <div
+                            className="w-2 h-2 bg-green-500 rounded-full animate-pulse"
+                            style={{ animationDelay: "0.2s" }}
+                          ></div>
+                          <div
+                            className="w-2 h-2 bg-green-500 rounded-full animate-pulse"
+                            style={{ animationDelay: "0.4s" }}
+                          ></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!isListening && (
+                    <div className="flex-1 p-3 border border-gray-200 bg-gray-50 rounded-lg text-gray-500 italic">
+                      Click the microphone button to start speaking
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex justify-between items-center mt-4">
@@ -848,12 +1111,13 @@ const Interview = () => {
                     {isListening ? (
                       <span className="text-green-600 font-medium flex items-center">
                         <span className="inline-block w-3 h-3 bg-green-600 rounded-full mr-2 animate-pulse"></span>
-                        Listening... Speak clearly into your microphone.
+                        Listening... speak clearly, your speech will be sent
+                        automatically.
                       </span>
                     ) : (
                       <span className="text-red-600 font-medium">
-                        Microphone inactive. Click the microphone icon to enable
-                        voice input.
+                        Microphone inactive. Click the microphone icon to start
+                        speaking.
                       </span>
                     )}
                   </div>
