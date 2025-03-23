@@ -27,38 +27,100 @@ const Interview = () => {
 
   // API endpoint
   const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
+  console.log("Using API URL:", API_URL); // Add logging to verify API URL
 
-  // Initialize speech recognition
+  // Auto-start listening when the interview begins and after AI speaks
+  useEffect(() => {
+    // This ensures the microphone activates at the beginning and after each AI response
+    if (
+      isInterviewStarted &&
+      !isListening &&
+      !isSpeaking &&
+      messages.length > 0
+    ) {
+      console.log("Auto-starting speech recognition after AI message");
+      // Small delay to ensure the UI has updated and the AI has finished speaking
+      const timer = setTimeout(() => {
+        if (!isSpeaking && recognitionRef.current) {
+          startListening();
+        }
+      }, 1000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [isInterviewStarted, isListening, isSpeaking, messages]);
+
+  // Initialize speech recognition with simpler implementation
   useEffect(() => {
     if ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) {
       const SpeechRecognition =
         window.SpeechRecognition || window.webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = false;
+      recognitionRef.current.continuous = false; // Use single recognition mode
+      recognitionRef.current.interimResults = false; // Only get final results
+      recognitionRef.current.lang = "en-US";
 
       recognitionRef.current.onresult = (event) => {
         const transcript =
           event.results[event.results.length - 1][0].transcript;
-        setUserInput((prevInput) => prevInput + " " + transcript);
+        setUserInput(transcript);
+        console.log("Speech recognized:", transcript);
+      };
+
+      recognitionRef.current.onstart = () => {
+        console.log("Recognition started");
+        setIsListening(true);
       };
 
       recognitionRef.current.onend = () => {
-        if (isListening) {
-          recognitionRef.current.start();
+        console.log("Recognition ended - restarting");
+        setIsListening(false);
+
+        // Restart speech recognition if interview is ongoing and not speaking
+        if (isInterviewStarted && !isSpeaking) {
+          setTimeout(() => {
+            try {
+              recognitionRef.current.start();
+              console.log("Auto-restarted speech recognition");
+            } catch (e) {
+              console.error("Failed to restart speech recognition:", e);
+            }
+          }, 300);
+        }
+      };
+
+      recognitionRef.current.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        setIsListening(false);
+
+        // Restart after error (except aborted)
+        if (event.error !== "aborted" && isInterviewStarted && !isSpeaking) {
+          setTimeout(() => {
+            try {
+              recognitionRef.current.start();
+              console.log("Restarted speech recognition after error");
+            } catch (e) {
+              console.error(
+                "Failed to restart speech recognition after error:",
+                e
+              );
+            }
+          }, 300);
         }
       };
     }
 
     return () => {
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
       }
       if (speechSynthesisRef.current) {
         window.speechSynthesis.cancel();
       }
     };
-  }, [isListening]);
+  }, [isInterviewStarted, isSpeaking]);
 
   // Scroll to bottom of messages
   useEffect(() => {
@@ -111,6 +173,16 @@ const Interview = () => {
     e.preventDefault();
     if (!name) {
       alert("Please enter your name");
+      return;
+    }
+
+    // Check if browser supports speech recognition
+    if (
+      !("SpeechRecognition" in window || "webkitSpeechRecognition" in window)
+    ) {
+      alert(
+        "Your browser doesn't support speech recognition. Please use Chrome, Edge or Safari."
+      );
       return;
     }
 
@@ -273,73 +345,88 @@ const Interview = () => {
     }
   };
 
-  // Play server-generated audio
+  // Simple playServerAudio function
   const playServerAudio = (audioUrl) => {
-    // Stop any current speech or audio
     stopSpeech();
 
-    console.log("Playing server audio:", audioUrl);
+    // Debug log the audio URL
+    console.log("Received audio URL:", audioUrl);
 
-    // Create audio element if it doesn't exist
+    // Stop listening while audio plays
+    if (isListening && recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+    }
+
     let audio = audioElement;
     if (!audio) {
       audio = new Audio();
       setAudioElement(audio);
     }
 
-    // Set event handlers
+    // Add more events for better debugging
+    audio.onloadstart = () => console.log("Audio loading started");
+    audio.onloadeddata = () => console.log("Audio data loaded");
+    audio.oncanplay = () => console.log("Audio can now play");
+
     audio.onplay = () => {
-      console.log("Audio playback started");
+      console.log("Audio started playing");
       setIsSpeaking(true);
     };
 
     audio.onended = () => {
       console.log("Audio playback completed");
       setIsSpeaking(false);
-    };
-
-    audio.onpause = () => {
-      console.log("Audio playback paused");
+      // Restart listening after audio ends
+      setTimeout(() => {
+        if (isInterviewStarted && recognitionRef.current) {
+          try {
+            recognitionRef.current.start();
+            console.log("Restarted listening after audio ended");
+          } catch (e) {
+            console.error("Failed to restart listening after audio ended:", e);
+          }
+        }
+      }, 500);
     };
 
     audio.onerror = (e) => {
-      console.error("Audio playback error:", e);
-      console.error("Error code:", audio.error ? audio.error.code : "unknown");
+      console.error("Audio error:", e);
+      console.error(
+        "Audio error code:",
+        audio.error ? audio.error.code : "unknown"
+      );
+      console.error(
+        "Audio error message:",
+        audio.error ? audio.error.message : "unknown"
+      );
       setIsSpeaking(false);
-      // Fallback to browser TTS if server audio fails
       const currentMessage = messages[messages.length - 1]?.content;
       if (currentMessage) {
-        console.log("Falling back to browser TTS");
+        console.log("Falling back to browser TTS due to audio error");
         speakText(currentMessage);
       }
     };
 
-    // Add load handling
-    audio.onloadstart = () => console.log("Audio loading started");
-    audio.oncanplay = () => console.log("Audio can start playing");
-    audio.onloadeddata = () => console.log("Audio data loaded");
-
-    // Set source with full URL and cachebuster to prevent caching issues
+    // Full URL with cachebuster to prevent caching issues
     const fullUrl = `${API_URL}${audioUrl}?t=${new Date().getTime()}`;
-    console.log("Setting audio source to:", fullUrl);
-    audio.src = fullUrl;
+    console.log("Playing audio from URL:", fullUrl);
 
-    // Load and play
+    // Set source and trigger load before playing
+    audio.src = fullUrl;
     audio.load();
 
-    // Set a small timeout to ensure loading has started
+    // Play with retry with a slightly longer delay
     setTimeout(() => {
-      console.log("Starting audio playback");
+      console.log("Attempting to play audio...");
       audio.play().catch((error) => {
         console.error("Failed to play audio:", error);
-        setIsSpeaking(false);
-
-        // Try once more after a delay
+        // Try again after a delay
         setTimeout(() => {
           console.log("Retrying audio playback...");
           audio.play().catch((retryError) => {
             console.error("Retry also failed:", retryError);
-
             // Fall back to browser TTS
             const currentMessage = messages[messages.length - 1]?.content;
             if (currentMessage) {
@@ -349,7 +436,7 @@ const Interview = () => {
           });
         }, 1000);
       });
-    }, 300);
+    }, 500); // Increased delay for better reliability
   };
 
   // Text-to-speech functionality (browser-based fallback)
@@ -357,6 +444,13 @@ const Interview = () => {
     if ("speechSynthesis" in window) {
       // Stop any ongoing speech
       stopSpeech();
+
+      // Stop listening while AI speaks
+      if (isListening && recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
+      }
 
       // Create new utterance
       const utterance = new SpeechSynthesisUtterance(text);
@@ -377,36 +471,8 @@ const Interview = () => {
       }
 
       function setVoice(voiceList) {
-        // Priority order: Indian male > Any male Indian > Any Indian > English male > Any male
-        const indianMaleVoice = voiceList.find(
-          (voice) =>
-            voice.lang.includes("en-IN") &&
-            (voice.name.includes("Male") ||
-              voice.name.includes("male") ||
-              voice.name.toLowerCase().includes("kumar"))
-        );
-
-        const anyIndianVoice = voiceList.find((voice) =>
-          voice.lang.includes("en-IN")
-        );
-
-        const englishMaleVoice = voiceList.find(
-          (voice) =>
-            (voice.lang.includes("en-US") || voice.lang.includes("en-GB")) &&
-            (voice.name.includes("Male") || voice.name.includes("male"))
-        );
-
-        const anyMaleVoice = voiceList.find(
-          (voice) => voice.name.includes("Male") || voice.name.includes("male")
-        );
-
-        // Pick the best available voice in order of preference
-        const preferredVoice =
-          indianMaleVoice ||
-          anyIndianVoice ||
-          englishMaleVoice ||
-          anyMaleVoice ||
-          voiceList[0];
+        // Just use any available voice
+        const preferredVoice = voiceList[0];
 
         if (preferredVoice) {
           console.log("Using voice:", preferredVoice.name, preferredVoice.lang);
@@ -415,7 +481,23 @@ const Interview = () => {
 
         // Set events
         utterance.onstart = () => setIsSpeaking(true);
-        utterance.onend = () => setIsSpeaking(false);
+        utterance.onend = () => {
+          setIsSpeaking(false);
+          // Restart listening after speech ends
+          setTimeout(() => {
+            if (isInterviewStarted && recognitionRef.current) {
+              try {
+                recognitionRef.current.start();
+                console.log("Restarted speech recognition after TTS ended");
+              } catch (e) {
+                console.error(
+                  "Failed to restart listening after TTS ended:",
+                  e
+                );
+              }
+            }
+          }, 500);
+        };
         utterance.onerror = () => setIsSpeaking(false);
 
         // Store reference and speak
@@ -445,6 +527,43 @@ const Interview = () => {
     setIsSpeaking(false);
   };
 
+  // Simple speech functions
+  const startListening = () => {
+    if (!recognitionRef.current) return;
+
+    // Clear the input when starting to listen
+    setUserInput("");
+
+    try {
+      recognitionRef.current.start();
+      console.log("Manually started speech recognition");
+    } catch (e) {
+      console.error("Error starting recognition:", e);
+      // If already started, stop and restart
+      if (e.message && e.message.includes("already started")) {
+        try {
+          recognitionRef.current.stop();
+          setTimeout(() => {
+            recognitionRef.current.start();
+          }, 100);
+        } catch (innerError) {
+          console.error("Failed to restart recognition:", innerError);
+        }
+      }
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+        console.log("Manually stopped speech recognition");
+      } catch (e) {
+        console.error("Error stopping recognition:", e);
+      }
+    }
+  };
+
   // Speech recognition toggle
   const toggleListening = () => {
     if (!recognitionRef.current) {
@@ -453,22 +572,12 @@ const Interview = () => {
     }
 
     if (isListening) {
+      console.log("Toggling speech recognition OFF");
       stopListening();
     } else {
+      console.log("Toggling speech recognition ON");
       startListening();
     }
-  };
-
-  const startListening = () => {
-    recognitionRef.current.start();
-    setIsListening(true);
-  };
-
-  const stopListening = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
-    setIsListening(false);
   };
 
   // Format assessment for display
@@ -570,12 +679,41 @@ const Interview = () => {
         <div className="bg-white shadow-md rounded-lg overflow-hidden">
           <div className="bg-blue-600 text-white p-4">
             <h2 className="text-xl font-semibold">
-              Technical Interview with AI
+              Technical Interview with Male Indian AI
             </h2>
             {sessionId && (
-              <p className="text-sm opacity-75">Session: {sessionId}</p>
+              <p className="text-sm opacity-75">
+                Voice-based Interview Session: {sessionId}
+              </p>
             )}
           </div>
+
+          {messages.length === 1 && (
+            <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mt-4 mb-4">
+              <div className="flex">
+                <div className="flex-shrink-0">
+                  <svg
+                    className="h-5 w-5 text-yellow-400"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm text-yellow-700">
+                    This is a voice-based interview. Please speak your answers
+                    into your microphone when the interviewer asks a question.
+                    Your speech will be converted to text automatically.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {assessment ? (
             // Assessment View
@@ -608,6 +746,26 @@ const Interview = () => {
                       }`}
                     >
                       {msg.content}
+                      {msg.role === "assistant" &&
+                        index === messages.length - 1 &&
+                        isSpeaking && (
+                          <div className="flex mt-2 justify-end">
+                            <div className="flex space-x-1 items-center">
+                              <span className="text-xs text-gray-500 mr-1">
+                                Speaking
+                              </span>
+                              <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"></div>
+                              <div
+                                className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"
+                                style={{ animationDelay: "0.2s" }}
+                              ></div>
+                              <div
+                                className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"
+                                style={{ animationDelay: "0.4s" }}
+                              ></div>
+                            </div>
+                          </div>
+                        )}
                     </div>
                   </div>
                 ))}
@@ -632,24 +790,25 @@ const Interview = () => {
               </div>
 
               <div className="border-t p-4">
-                <div className="flex">
+                <div className="flex items-center">
                   <button
                     type="button"
                     onClick={toggleListening}
-                    className={`p-2 mr-2 rounded-full ${
+                    className={`p-3 mr-3 rounded-full flex items-center justify-center ${
                       isListening
-                        ? "bg-red-500 text-white"
-                        : "bg-gray-200 text-gray-700"
+                        ? "bg-red-500 text-white shadow-lg animate-pulse"
+                        : "bg-blue-500 text-white hover:bg-blue-600"
                     }`}
+                    style={{ minWidth: "50px", height: "50px" }}
                     title={isListening ? "Stop Listening" : "Start Listening"}
                   >
-                    <FaMicrophone />
+                    <FaMicrophone size={24} />
                   </button>
 
                   <button
                     type="button"
                     onClick={isSpeaking ? stopSpeech : null}
-                    className={`p-2 mr-2 rounded-full ${
+                    className={`p-2 mr-3 rounded-full ${
                       isSpeaking
                         ? "bg-yellow-500 text-white"
                         : "bg-gray-200 text-gray-400"
@@ -660,29 +819,44 @@ const Interview = () => {
                     <FaPause />
                   </button>
 
-                  <input
-                    type="text"
-                    className="flex-1 p-2 border rounded-l-lg"
-                    placeholder="Type your answer..."
-                    value={userInput}
-                    onChange={(e) => setUserInput(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === "Enter") {
-                        sendResponse();
-                      }
-                    }}
-                  />
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      className="w-full p-3 border rounded-l-lg"
+                      placeholder="Press microphone to speak or type here"
+                      value={userInput}
+                      onChange={(e) => setUserInput(e.target.value)}
+                      onKeyPress={(e) => {
+                        if (e.key === "Enter") {
+                          sendResponse();
+                        }
+                      }}
+                    />
+                  </div>
 
                   <button
                     onClick={sendResponse}
-                    className="bg-blue-600 text-white px-4 py-2 rounded-r-lg hover:bg-blue-700 transition"
+                    className="bg-blue-600 text-white px-4 py-3 rounded-r-lg hover:bg-blue-700 transition"
                     disabled={!userInput.trim() || isLoading}
                   >
                     Send
                   </button>
                 </div>
 
-                <div className="flex justify-between mt-4">
+                <div className="flex justify-between items-center mt-4">
+                  <div className="text-sm text-gray-600">
+                    {isListening ? (
+                      <span className="text-green-600 font-medium flex items-center">
+                        <span className="inline-block w-3 h-3 bg-green-600 rounded-full mr-2 animate-pulse"></span>
+                        Listening... Speak clearly into your microphone.
+                      </span>
+                    ) : (
+                      <span className="text-red-600 font-medium">
+                        Microphone inactive. Click the microphone icon to enable
+                        voice input.
+                      </span>
+                    )}
+                  </div>
                   <button
                     onClick={endInterview}
                     className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition"

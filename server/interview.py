@@ -18,12 +18,33 @@ CORS(app)  # Enable Cross-Origin Requests
 genai.configure(api_key="AIzaSyDt0zEqI4kJPvA_LFPTBef5ZfWI-QoU5LA")  # Replace with actual API key
 
 # Initialize Text-to-Speech client
+tts_client = None
+local_tts = None
+using_cloud_tts = False
+
 try:
+    # First try Google Cloud TTS
     tts_client = texttospeech.TextToSpeechClient()
     print("Text-to-Speech client initialized successfully")
+    using_cloud_tts = True
 except Exception as e:
     print(f"Warning: Could not initialize Text-to-Speech client: {e}")
     tts_client = None
+    
+# Always try to initialize local TTS regardless of Google Cloud status
+try:
+    # Try to use pyttsx3 for local TTS
+    import pyttsx3
+    local_tts = pyttsx3.init()
+    # Test if the engine works
+    test_voices = local_tts.getProperty('voices')
+    print(f"Local TTS initialized successfully with {len(test_voices)} voices")
+    if not using_cloud_tts:
+        print("Using local TTS as primary voice engine")
+except Exception as local_e:
+    print(f"Warning: Could not initialize local TTS: {local_e}")
+    if not using_cloud_tts:
+        print("No TTS systems available - voice functionality will not work")
 
 # Create directory for interview sessions and audio files
 SESSIONS_DIR = "interview_sessions"
@@ -116,14 +137,17 @@ def start_interview():
         
         # Generate audio if voice mode is enabled
         audio_file_path = None
-        if voice_mode and tts_client:
+        if voice_mode:  # Remove the tts_client check to allow local TTS to work
             try:
                 # Generate a unique audio file name
                 audio_file_name = f"intro_{uuid.uuid4()}.mp3"
                 audio_file_path = os.path.join(AUDIO_DIR, audio_file_name)
                 
                 # Generate speech from text
-                generate_speech(interview_intro, audio_file_path)
+                result_path = generate_speech(interview_intro, audio_file_path)
+                # Use the returned path which might be different if using WAV
+                if result_path and result_path != audio_file_path:
+                    audio_file_path = result_path
                 
                 print(f"Generated audio for introduction: {audio_file_path}")
             except Exception as audio_error:
@@ -203,14 +227,17 @@ def interview_response():
         
         # Generate audio if voice mode is enabled
         audio_file_path = None
-        if voice_mode and tts_client:
+        if voice_mode:  # Remove the tts_client check to allow local TTS to work
             try:
                 # Generate a unique audio file name
                 audio_file_name = f"response_{uuid.uuid4()}.mp3"
                 audio_file_path = os.path.join(AUDIO_DIR, audio_file_name)
                 
                 # Generate speech from text
-                generate_speech(ai_response, audio_file_path)
+                result_path = generate_speech(ai_response, audio_file_path)
+                # Use the returned path which might be different if using WAV
+                if result_path and result_path != audio_file_path:
+                    audio_file_path = result_path
                 
                 print(f"Generated audio for response: {audio_file_path}")
             except Exception as audio_error:
@@ -287,7 +314,7 @@ def initialize_interview(name, resume_text):
             resume_text = resume_text[:max_resume_length] + "... [truncated for length]"
         
         prompt = f"""
-        You are an AI technical interviewer named TechInterviewer. You are a male interviewer with an Indian background.
+        You are an AI technical interviewer named TechInterviewer. 
         You will conduct a technical interview with {name}.
         
         Here is their resume:
@@ -295,13 +322,11 @@ def initialize_interview(name, resume_text):
         
         Based on this resume, conduct a technical interview focusing on their skills and experience.
         Keep these guidelines in mind:
-        1. Start with a friendly introduction including a warm greeting like "Namaste"
-        2. Present yourself as a male technical interviewer with an Indian background
-        3. Ask only ONE brief question about their background or a specific skill from their resume
-        4. Be conversational and encouraging using a distinctly male Indian communication style
-        5. Use short sentences that are easy to speak aloud
-        6. Avoid long explanations or multiple questions in a row
-        7. Occasionally use Indian expressions that a male Indian interviewer might use
+        1. Start with a friendly introduction (e.g., "Hello" or "Good day")
+        2. Ask only ONE brief question about their background or a specific skill from their resume
+        3. Be conversational and encouraging
+        4. Use short sentences that are easy to speak aloud
+        5. Avoid long explanations or multiple questions in a row
         
         Begin the interview with a brief introduction and your first question.
         IMPORTANT: Keep your response under 100 words, using simple sentences that are easy to speak aloud.
@@ -320,7 +345,7 @@ def initialize_interview(name, resume_text):
             raise
     except Exception as e:
         print(f"Error initializing interview: {e}")
-        return f"Namaste, {name}! I'm TechInterviewer, a male AI assistant with an Indian background. Let's begin our technical interview. Could you tell me a bit about your background?"
+        return f"Hello, {name}! I'm TechInterviewer, an AI assistant. Let's begin our technical interview. Could you tell me a bit about your background?"
 
 def get_next_interview_question(session_data):
     """Generate the next interview question based on conversation history"""
@@ -341,7 +366,7 @@ def get_next_interview_question(session_data):
         conversation_text += f"{'You' if role == 'assistant' else candidate_name}: {content}\n\n"
     
     prompt = f"""
-    You are TechInterviewer, a male AI technical interviewer with an Indian background.
+    You are TechInterviewer, an AI technical interviewer.
     You are conducting an interview with {candidate_name}.
     
     Resume highlights:
@@ -358,13 +383,11 @@ def get_next_interview_question(session_data):
     4. Projects and achievements
     
     Guidelines:
-    - Maintain your persona as a male Indian technical interviewer
     - Ask only ONE question at a time
     - Use short, clear sentences that are easy to speak aloud
-    - Add occasional Indian expressions like "That's fantastic" or "I see" that a male Indian interviewer would use
     - If they ask you a question, provide a brief response and then ask your next question
     - Avoid long explanations
-    - Use a warm but professional tone as a male Indian interviewer would
+    - Use a warm but professional tone
     
     IMPORTANT: Your response must be under 75 words total and easy to speak aloud.
     """
@@ -374,7 +397,7 @@ def get_next_interview_question(session_data):
         return response.text.strip()
     except Exception as e:
         print(f"Error generating next question: {e}")
-        return "That's interesting. As a technical interviewer, I'm curious - could you tell me more about a challenging project you've worked on recently?"
+        return "That's interesting. I'm curious - could you tell me more about a challenging project you've worked on recently?"
 
 def generate_final_assessment(session_data):
     """Generate a final assessment of the candidate"""
@@ -395,8 +418,8 @@ def generate_final_assessment(session_data):
         conversation_text += f"{'TechInterviewer' if role == 'assistant' else candidate_name}: {content}\n\n"
     
     prompt = f"""
-You are an AI technical interviewer named TechInterviewer. You are a male interviewer with an Indian background.
-You speak in a warm and conversational tone, similar to a friendly Indian male professor or experienced HR professional.
+You are an AI technical interviewer named TechInterviewer.
+You speak in a warm and conversational tone, similar to a friendly professor or experienced HR professional.
 
 You have conducted a technical interview with {candidate_name}.
     
@@ -410,13 +433,11 @@ Based on this interview, provide a comprehensive assessment of the candidate inc
 1. Technical skills assessment
 2. Communication skills
 3. Problem-solving abilities
-4. Cultural fit with Indian work environment
+4. Cultural fit
 5. Strengths and weaknesses
 6. Overall impression
 7. Recommendations for improvement
-    
-As a male Indian interviewer, structure your assessment to be thorough but fair, incorporating Indian professional values of respect and growth mindset.
-    
+
 Format your assessment as JSON with these sections.
 """
     
@@ -444,7 +465,7 @@ Format your assessment as JSON with these sections.
     except Exception as e:
         print(f"Error generating final assessment: {e}")
         return {
-            "text_assessment": f"Assessment for {candidate_name}: Namaste! As a male Indian technical interviewer, I found that the candidate participated well in our technical discussion. They showed promise in their approach. I recommend further evaluation to make a complete assessment. Dhanyavaad for your participation!"
+            "text_assessment": f"Assessment for {candidate_name}: Thank you for participating in this technical interview. You showed promising skills, and I recommend further evaluation to make a complete assessment."
         }
 
 def save_session(session_id, data):
@@ -483,31 +504,33 @@ def load_session(session_id):
     return None
 
 def generate_speech(text, output_file_path):
-    """Generate speech from text using Google Text-to-Speech with Indian male voice"""
-    if not tts_client:
-        print("Text-to-Speech client not initialized. Cannot generate speech.")
-        raise Exception("Text-to-Speech service not available")
-        
-    try:
-        # Simplify the chunking to create larger, more stable chunks
-        # Process longer content in a single request when possible
-        if len(text) <= 4000:  # If text is small enough, process in one go
-            print(f"Processing entire text of {len(text)} chars in one request")
+    """Generate speech from text using Google TTS or local TTS fallback"""
+    # First try Google Cloud TTS if available
+    if tts_client and using_cloud_tts:
+        try:
+            print("Using Google Cloud TTS...")
+            # Simplify the text to make it more digestible
+            text = text.replace('\n', ' ').strip()
+            
+            # Limit text length for more reliable processing
+            if len(text) > 2000:
+                text = text[:2000] + "..."
+                print(f"Text was too long and was truncated to {len(text)} chars")
             
             # Set the text input to be synthesized
             synthesis_input = texttospeech.SynthesisInput(text=text)
             
-            # Build the voice request with Indian male voice (always use male voice)
+            # Build the voice request with neutral voice
             voice = texttospeech.VoiceSelectionParams(
-                language_code="en-IN",  # Indian English
-                name="en-IN-Neural2-D",  # Indian male voice
+                language_code="en-US",
+                name="en-US-Neural2-D",  # Standard male voice
                 ssml_gender=texttospeech.SsmlVoiceGender.MALE
             )
             
             # Select the type of audio file you want returned
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3,
-                speaking_rate=0.85,  # Slightly slower for clearer accent
+                speaking_rate=0.9,  # Slightly slower for better clarity
                 pitch=0.0  # Default pitch
             )
             
@@ -520,210 +543,78 @@ def generate_speech(text, output_file_path):
             with open(output_file_path, "wb") as out:
                 out.write(response.audio_content)
                 
-            print(f"Audio content written to file: {output_file_path}")
-            return True
-        else:
-            # For longer text, break it into paragraphs or sentences
-            print(f"Text length ({len(text)} chars) exceeds single request limit, breaking into chunks")
-            
-            # Split text by paragraphs or sentences
-            import re
-            
-            # First try to split by paragraphs (double newlines)
-            paragraphs = re.split(r'\n\s*\n', text)
-            
-            if len(paragraphs) == 1:
-                # If no paragraphs, split by sentences
-                # Look for ., !, ? followed by space or newline
-                sentences = re.split(r'(?<=[.!?])\s+', text)
-                chunks = []
-                current_chunk = ""
-                
-                for sentence in sentences:
-                    # If adding this sentence would exceed limit, start a new chunk
-                    if len(current_chunk) + len(sentence) > 4000:
-                        if current_chunk:
-                            chunks.append(current_chunk)
-                        current_chunk = sentence
-                    else:
-                        if current_chunk:
-                            current_chunk += " " + sentence
-                        else:
-                            current_chunk = sentence
-                
-                # Add the last chunk if it's not empty
-                if current_chunk:
-                    chunks.append(current_chunk)
+            print(f"Google Cloud TTS audio written to file: {output_file_path}")
+            return output_file_path
+        except Exception as e:
+            print(f"Google Cloud TTS failed: {e}")
+            if local_tts:
+                print("Falling back to local TTS...")
+                # Call local TTS but use WAV instead of MP3
+                wav_path = output_file_path.replace('.mp3', '.wav')
+                try:
+                    # Return the actual path from the local TTS function
+                    return generate_local_tts(text, wav_path)
+                except Exception as local_e:
+                    print(f"Local TTS fallback also failed: {local_e}")
+                    raise
             else:
-                # Process by paragraphs
-                chunks = []
-                current_chunk = ""
-                
-                for paragraph in paragraphs:
-                    # If adding this paragraph would exceed limit, start a new chunk
-                    if len(current_chunk) + len(paragraph) > 4000:
-                        if current_chunk:
-                            chunks.append(current_chunk)
-                        current_chunk = paragraph
-                    else:
-                        if current_chunk:
-                            current_chunk += "\n\n" + paragraph
-                        else:
-                            current_chunk = paragraph
-                
-                # Add the last chunk if it's not empty
-                if current_chunk:
-                    chunks.append(current_chunk)
+                raise
+    elif local_tts:
+        # Use local TTS as primary option
+        print("Using local TTS as primary option...")
+        # Use WAV instead of MP3
+        wav_path = output_file_path.replace('.mp3', '.wav')
+        try:
+            # Return the actual path from the local TTS function
+            return generate_local_tts(text, wav_path)
+        except Exception as local_e:
+            print(f"Local TTS failed as primary option: {local_e}")
+            raise
+    else:
+        print("No TTS system available")
+        raise Exception("Text-to-Speech service not available")
+
+def generate_local_tts(text, output_file_path):
+    """Generate speech using local pyttsx3 TTS engine"""
+    if not local_tts:
+        raise Exception("Local TTS not available")
+        
+    try:
+        print(f"Generating speech using local TTS engine")
+        # Simplify the text
+        text = text.replace('\n', ' ').strip()
+        if len(text) > 2000:
+            text = text[:2000] + "..."
             
-            # Log chunk information
-            print(f"Split text into {len(chunks)} chunks for TTS processing")
-            for i, chunk in enumerate(chunks):
-                print(f"Chunk {i+1}: {len(chunk)} chars")
+        # Try to get available voices and set a male voice if possible
+        voices = local_tts.getProperty('voices')
+        for voice in voices:
+            if 'male' in voice.name.lower():
+                print(f"Setting male voice: {voice.name}")
+                local_tts.setProperty('voice', voice.id)
+                break
+                
+        # Configure speech rate
+        local_tts.setProperty('rate', 150)  # Normal speaking rate
             
-            # Process each chunk and combine the audio
-            all_audio_content = bytearray()
-            
-            for i, chunk in enumerate(chunks):
-                print(f"Processing TTS chunk {i+1}/{len(chunks)}")
-                
-                # Set the text input to be synthesized
-                synthesis_input = texttospeech.SynthesisInput(text=chunk)
-                
-                # Build the voice request with Indian male voice (always use male voice)
-                voice = texttospeech.VoiceSelectionParams(
-                    language_code="en-IN",  # Indian English
-                    name="en-IN-Neural2-D",  # Indian male voice
-                    ssml_gender=texttospeech.SsmlVoiceGender.MALE
-                )
-                
-                # Select the type of audio file you want returned
-                audio_config = texttospeech.AudioConfig(
-                    audio_encoding=texttospeech.AudioEncoding.MP3,
-                    speaking_rate=0.85,  # Slightly slower for clearer accent
-                    pitch=0.0  # Default pitch
-                )
-                
-                # Perform the text-to-speech request
-                response = tts_client.synthesize_speech(
-                    input=synthesis_input, voice=voice, audio_config=audio_config
-                )
-                
-                # Append this chunk's audio to our collection
-                all_audio_content.extend(response.audio_content)
-            
-            # Write the combined audio to the output file
-            with open(output_file_path, "wb") as out:
-                out.write(all_audio_content)
-                
-            print(f"Combined audio content written to file: {output_file_path}")
-            return True
-            
+        # Save to WAV file (pyttsx3 uses WAV)
+        wav_path = output_file_path
+        if not wav_path.endswith('.wav'):
+            wav_path = output_file_path.replace('.mp3', '.wav')
+        
+        # Run in blocking mode
+        print(f"Saving TTS to file: {wav_path}")
+        local_tts.save_to_file(text, wav_path)
+        local_tts.runAndWait()
+        
+        print(f"Local TTS saved to: {wav_path}")
+        # Return the path instead of boolean
+        return wav_path
     except Exception as e:
-        print(f"Error generating speech: {e}")
+        print(f"Local TTS failed: {e}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
-        
-        # Fallback to standard voice if Indian voice fails
-        try:
-            print("Falling back to standard English male voice...")
-            
-            # Similar approach with US voice
-            if len(text) <= 4000:
-                synthesis_input = texttospeech.SynthesisInput(text=text)
-                
-                voice = texttospeech.VoiceSelectionParams(
-                    language_code="en-US",
-                    name="en-US-Neural2-D",  # US male voice
-                    ssml_gender=texttospeech.SsmlVoiceGender.MALE
-                )
-                
-                audio_config = texttospeech.AudioConfig(
-                    audio_encoding=texttospeech.AudioEncoding.MP3,
-                    speaking_rate=0.9,
-                    pitch=0.0
-                )
-                
-                response = tts_client.synthesize_speech(
-                    input=synthesis_input, voice=voice, audio_config=audio_config
-                )
-                
-                with open(output_file_path, "wb") as out:
-                    out.write(response.audio_content)
-                
-                print(f"Fallback voice audio content written to file: {output_file_path}")
-                return True
-            else:
-                # For longer text, use the same chunking logic as above
-                import re
-                paragraphs = re.split(r'\n\s*\n', text)
-                
-                if len(paragraphs) == 1:
-                    sentences = re.split(r'(?<=[.!?])\s+', text)
-                    chunks = []
-                    current_chunk = ""
-                    
-                    for sentence in sentences:
-                        if len(current_chunk) + len(sentence) > 4000:
-                            if current_chunk:
-                                chunks.append(current_chunk)
-                            current_chunk = sentence
-                        else:
-                            if current_chunk:
-                                current_chunk += " " + sentence
-                            else:
-                                current_chunk = sentence
-                    
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                else:
-                    chunks = []
-                    current_chunk = ""
-                    
-                    for paragraph in paragraphs:
-                        if len(current_chunk) + len(paragraph) > 4000:
-                            if current_chunk:
-                                chunks.append(current_chunk)
-                            current_chunk = paragraph
-                        else:
-                            if current_chunk:
-                                current_chunk += "\n\n" + paragraph
-                            else:
-                                current_chunk = paragraph
-                    
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                
-                all_audio_content = bytearray()
-                
-                for chunk in chunks:
-                    synthesis_input = texttospeech.SynthesisInput(text=chunk)
-                    
-                    voice = texttospeech.VoiceSelectionParams(
-                        language_code="en-US",
-                        name="en-US-Neural2-D",  # US male voice
-                        ssml_gender=texttospeech.SsmlVoiceGender.MALE
-                    )
-                    
-                    audio_config = texttospeech.AudioConfig(
-                        audio_encoding=texttospeech.AudioEncoding.MP3,
-                        speaking_rate=0.9,
-                        pitch=0.0
-                    )
-                    
-                    response = tts_client.synthesize_speech(
-                        input=synthesis_input, voice=voice, audio_config=audio_config
-                    )
-                    
-                    all_audio_content.extend(response.audio_content)
-                
-                with open(output_file_path, "wb") as out:
-                    out.write(all_audio_content)
-                
-                print(f"Fallback voice audio content written to file: {output_file_path}")
-                return True
-        except Exception as fallback_error:
-            print(f"Fallback voice also failed: {fallback_error}")
-            raise
+        raise
 
 @app.route('/get_audio/<filename>', methods=['GET'])
 def get_audio(filename):
@@ -731,20 +622,30 @@ def get_audio(filename):
     try:
         # Clean filename to prevent directory traversal
         cleaned_filename = os.path.basename(filename)
-        file_path = os.path.join(AUDIO_DIR, cleaned_filename)
         
-        if not os.path.exists(file_path):
-            print(f"Audio file not found: {file_path}")
+        # Check for both MP3 and WAV versions
+        mp3_path = os.path.join(AUDIO_DIR, cleaned_filename)
+        wav_path = os.path.join(AUDIO_DIR, cleaned_filename.replace('.mp3', '.wav'))
+        
+        # Determine which file to serve
+        if os.path.exists(mp3_path):
+            file_path = mp3_path
+            mimetype = 'audio/mpeg'
+        elif os.path.exists(wav_path):
+            file_path = wav_path
+            mimetype = 'audio/wav'
+        else:
+            print(f"Audio file not found: {mp3_path} or {wav_path}")
             return jsonify({"error": "Audio file not found"}), 404
         
         # Get the file size for content-length header
         file_size = os.path.getsize(file_path)
-        print(f"Serving audio file: {file_path}, size: {file_size} bytes")
+        print(f"Serving audio file: {file_path}, size: {file_size} bytes, type: {mimetype}")
         
         # Send file with explicit MIME type and cache control headers
         response = send_file(
             file_path, 
-            mimetype='audio/mpeg',
+            mimetype=mimetype,
             as_attachment=False,
             conditional=True
         )
